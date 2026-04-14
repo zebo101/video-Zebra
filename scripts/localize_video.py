@@ -6,11 +6,13 @@ import base64
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, TypeVar
@@ -96,6 +98,68 @@ def load_segments_from_json(path: Path) -> list[Segment]:
     return segments
 
 
+def parse_srt_timestamp(value: str) -> float:
+    normalized = value.strip().replace(".", ",")
+    parts = normalized.split(":")
+    if len(parts) != 3:
+        raise SystemExit(f"Unsupported SRT timestamp: {value}")
+    hours = int(parts[0])
+    minutes = int(parts[1])
+    seconds_text, millis_text = parts[2].split(",", maxsplit=1)
+    return (
+        hours * 3600
+        + minutes * 60
+        + int(seconds_text)
+        + int(millis_text.ljust(3, "0")[:3]) / 1000.0
+    )
+
+
+def load_segments_from_srt(path: Path) -> list[Segment]:
+    raw_text = path.read_text(encoding="utf-8-sig")
+    blocks = re.split(r"\r?\n\r?\n+", raw_text.strip())
+    segments: list[Segment] = []
+    for block in blocks:
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        timestamp_index = 0 if "-->" in lines[0] else 1
+        if timestamp_index >= len(lines) or "-->" not in lines[timestamp_index]:
+            raise SystemExit(f"Unsupported SRT block in {path}: {block!r}")
+        start_text, end_text = [
+            part.strip() for part in lines[timestamp_index].split("-->", maxsplit=1)
+        ]
+        text_lines = lines[timestamp_index + 1 :]
+        text = " ".join(line.strip() for line in text_lines if line.strip())
+        if not text:
+            continue
+        segments.append(
+            Segment(
+                start=parse_srt_timestamp(start_text),
+                end=parse_srt_timestamp(end_text),
+                text=text,
+            )
+        )
+    if not segments:
+        raise SystemExit(f"SRT file did not contain usable subtitle segments: {path}")
+    return segments
+
+
+def resolve_input_srt(video_path: Path, explicit_srt: Path | None = None) -> Path:
+    if explicit_srt is not None:
+        resolved = explicit_srt.expanduser().resolve()
+        if not resolved.exists():
+            raise SystemExit(f"Input subtitle does not exist: {resolved}")
+        return resolved
+
+    inferred = video_path.with_name(f"{video_path.stem}_en.srt")
+    if inferred.exists():
+        return inferred
+    raise SystemExit(
+        "Local video input requires --input-srt or a sibling '*_en.srt' subtitle file. "
+        f"Expected: {inferred}"
+    )
+
+
 def ensure_source_video(
     input_value: str,
     workdir: Path,
@@ -149,6 +213,14 @@ def extract_audio(video_path: Path, output_path: Path) -> None:
     )
 
 
+def ensure_source_audio(source_video: Path, workdir: Path) -> Path:
+    source_audio = workdir / "audio.wav"
+    if source_audio.exists():
+        return source_audio
+    extract_audio(source_video, source_audio)
+    return source_audio
+
+
 def transcribe_with_faster_whisper(
     audio_path: Path,
     *,
@@ -188,6 +260,144 @@ def env_required(name: str) -> str:
     if not value:
         raise SystemExit(f"Missing required environment variable: {name}")
     return value
+
+
+def build_volc_tts_request(
+    text: str,
+    *,
+    speaker: str,
+    response_format: str,
+    sample_rate: int,
+) -> urllib.request.Request:
+    api_key = os.environ.get("VOLCENGINE_TTS_API_KEY", "").strip()
+    tts_url = os.environ.get("VOLCENGINE_TTS_URL", "").strip()
+    app_id = os.environ.get("VOLCENGINE_TTS_APP_ID", "").strip()
+    access_key = os.environ.get("VOLCENGINE_TTS_ACCESS_KEY", "").strip()
+    resource_id = os.environ.get("VOLCENGINE_TTS_RESOURCE_ID", "").strip()
+    if api_key:
+        if not resource_id or not tts_url:
+            raise SystemExit(
+                "Missing TTS configuration for API key mode: set VOLCENGINE_TTS_RESOURCE_ID and VOLCENGINE_TTS_URL"
+            )
+        body = json.dumps(
+            {
+                "text": text,
+                "voice_type": speaker,
+                "speed_ratio": 1.0,
+                "volume_ratio": 1.0,
+                "audio_config": {
+                    "format": response_format,
+                    "sample_rate": sample_rate,
+                },
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        headers = {
+            "X-Api-Key": api_key,
+            "X-Api-Resource-Id": resource_id,
+            "X-Api-Request-Id": str(uuid.uuid4()),
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+        }
+        return urllib.request.Request(
+            tts_url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+    resource_id = resource_id or "volc.service_type.10029"
+    body = json.dumps(
+        {
+            "req_params": {
+                "text": text,
+                "speaker": speaker,
+                "audio_params": {
+                    "format": response_format,
+                    "sample_rate": sample_rate,
+                },
+                "additions": json.dumps(
+                    {
+                        "disable_markdown_filter": True,
+                        "enable_language_detector": True,
+                        "enable_latex_tn": True,
+                        "disable_default_bit_rate": True,
+                        "max_length_to_filter_parenthesis": 0,
+                        "cache_config": {"text_type": 1, "use_cache": True},
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            }
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    headers = {
+        "X-Api-Resource-Id": resource_id,
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+    }
+    if app_id and access_key:
+        headers["X-Api-App-Id"] = app_id
+        headers["X-Api-Access-Key"] = access_key
+    else:
+        raise SystemExit(
+            "Missing TTS credentials: set VOLCENGINE_TTS_API_KEY or both VOLCENGINE_TTS_APP_ID and VOLCENGINE_TTS_ACCESS_KEY"
+        )
+    return urllib.request.Request(
+        "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+
+
+def parse_tts_response(response_bytes: bytes, *, content_type: str) -> bytes:
+    normalized_content_type = (content_type or "").lower()
+    if normalized_content_type.startswith("audio/") or normalized_content_type == "application/octet-stream":
+        return response_bytes
+
+    response_text = response_bytes.decode("utf-8")
+    stripped = response_text.strip()
+    if not stripped:
+        raise SystemExit("Volc TTS response was empty")
+
+    if stripped.startswith("{"):
+        parsed = json.loads(stripped)
+        candidates = [
+            parsed.get("data"),
+            parsed.get("audio"),
+            parsed.get("audio_data"),
+            parsed.get("result"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str):
+                return base64.b64decode(candidate)
+            if isinstance(candidate, dict):
+                for key in ("data", "audio", "audio_data", "base64"):
+                    value = candidate.get(key)
+                    if isinstance(value, str):
+                        return base64.b64decode(value)
+        raise SystemExit("Volc TTS JSON response did not contain base64 audio data")
+
+    audio_parts: list[bytes] = []
+    final_code: int | None = None
+    final_message = ""
+    for raw_line in response_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parsed = json.loads(line)
+        if parsed.get("data"):
+            audio_parts.append(base64.b64decode(parsed["data"]))
+        if "code" in parsed:
+            final_code = int(parsed["code"])
+            final_message = str(parsed.get("message", ""))
+
+    if not audio_parts:
+        raise SystemExit("Volc TTS response did not contain audio chunks")
+    if final_code not in (None, 0, 20000000):
+        raise SystemExit(f"Volc TTS failed: code={final_code}, message={final_message}")
+    return b"".join(audio_parts)
 
 
 def create_volc_translate_api():
@@ -267,6 +477,13 @@ def write_srt(path: Path, segments: list[Segment]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def text_for_dubbing(segment: Segment) -> str:
+    # Keep dubbing cleanup separate from subtitle rendering so spoken phrasing can
+    # be tuned later without changing subtitle output files.
+    text = (segment.translated_text or segment.text).strip()
+    return re.sub(r"\s+", " ", text)
+
+
 def probe_duration(path: Path) -> float:
     require_command("ffprobe")
     output = run(
@@ -337,70 +554,22 @@ def synthesize_volc_tts(
     response_format: str,
     sample_rate: int,
 ) -> bytes:
-    api_key = env_required("VOLCENGINE_TTS_API_KEY")
-    resource_id = os.environ.get("VOLCENGINE_TTS_RESOURCE_ID", "volc.service_type.10029").strip() or "volc.service_type.10029"
-    body = json.dumps(
-        {
-            "req_params": {
-                "text": text,
-                "speaker": speaker,
-                "audio_params": {
-                    "format": response_format,
-                    "sample_rate": sample_rate,
-                },
-                "additions": json.dumps(
-                    {
-                        "disable_markdown_filter": True,
-                        "enable_language_detector": True,
-                        "enable_latex_tn": True,
-                        "disable_default_bit_rate": True,
-                        "max_length_to_filter_parenthesis": 0,
-                        "cache_config": {"text_type": 1, "use_cache": True},
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            }
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        "https://openspeech.bytedance.com/api/v3/tts/unidirectional",
-        data=body,
-        headers={
-            "x-api-key": api_key,
-            "X-Api-Resource-Id": resource_id,
-            "Connection": "keep-alive",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    request = build_volc_tts_request(
+        text,
+        speaker=speaker,
+        response_format=response_format,
+        sample_rate=sample_rate,
     )
     try:
         with urllib.request.urlopen(request) as response:
-            response_text = response.read().decode("utf-8")
+            response_bytes = response.read()
+            content_type = response.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"Volc TTS request failed ({exc.code}): {body}") from exc
+        headers = dict(exc.headers.items()) if exc.headers else {}
+        raise SystemExit(f"Volc TTS request failed ({exc.code}): headers={headers}, body={body}") from exc
 
-    audio_parts: list[bytes] = []
-    final_code: int | None = None
-    final_message = ""
-    for raw_line in response_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parsed = json.loads(line)
-        if parsed.get("data"):
-            audio_parts.append(base64.b64decode(parsed["data"]))
-        if "code" in parsed:
-            final_code = int(parsed["code"])
-            final_message = str(parsed.get("message", ""))
-
-    if not audio_parts:
-        raise SystemExit("Volc TTS response did not contain audio chunks")
-    if final_code not in (0, 20000000):
-        raise SystemExit(f"Volc TTS failed: code={final_code}, message={final_message}")
-    return b"".join(audio_parts)
+    return parse_tts_response(response_bytes, content_type=content_type)
 
 
 def synthesize_tts_segments(
@@ -415,7 +584,7 @@ def synthesize_tts_segments(
     audio_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[Path] = []
     for index, segment in enumerate(segments):
-        text = (segment.translated_text or "").strip()
+        text = text_for_dubbing(segment)
         if not text:
             continue
         output_path = audio_dir / f"tts_{index:04d}.{response_format}"
@@ -492,6 +661,27 @@ def mix_with_original_audio(
     )
 
 
+def finalize_audio(
+    original_audio: Path | None,
+    dub_track: Path,
+    output_path: Path,
+    *,
+    mute_original_audio: bool,
+    background_volume: float,
+) -> None:
+    if mute_original_audio:
+        shutil.copy2(dub_track, output_path)
+        return
+    if original_audio is None:
+        raise SystemExit("Original audio is required unless --mute-original-audio is enabled")
+    mix_with_original_audio(
+        original_audio,
+        dub_track,
+        output_path,
+        background_volume=background_volume,
+    )
+
+
 def escape_subtitle_path(path: Path) -> str:
     escaped = str(path.resolve())
     escaped = escaped.replace("\\", "\\\\")
@@ -565,6 +755,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create Chinese subtitles and Mandarin dubbing for a video.")
     parser.add_argument("--input", required=True, help="YouTube URL or local video path")
     parser.add_argument("--workdir", required=True, help="Directory for intermediate and final files")
+    parser.add_argument("--input-srt", help="Existing English SRT to use for local-video translation and dubbing")
     parser.add_argument("--transcript-json", help="Existing transcript JSON with segments")
     parser.add_argument("--cookies-from-browser", help="Pass browser cookies to yt-dlp, for example edge or chrome")
     parser.add_argument("--skip-transcription", action="store_true", help="Require --transcript-json instead of transcribing")
@@ -575,10 +766,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whisper-compute-type", default="default", help="faster-whisper compute type")
     parser.add_argument("--translation-target-language", default="zh", help="Volcengine translation target language code")
     parser.add_argument("--translation-batch-size", type=int, default=16, help="Volcengine TranslateText batch size, max 16")
-    parser.add_argument("--voice", default="zh_female_qingxin", help="Volc TTS speaker name")
+    parser.add_argument("--voice", default="zh_female_cancan_mars_bigtts", help="Volc TTS speaker name")
     parser.add_argument("--tts-format", default="wav", choices=["mp3", "wav", "aac"], help="Volc TTS output format")
     parser.add_argument("--tts-sample-rate", type=int, default=24000, choices=[8000, 16000, 22050, 24000, 32000, 44100, 48000], help="Volc TTS sample rate")
     parser.add_argument("--background-volume", type=float, default=0.12)
+    parser.add_argument("--mute-original-audio", action="store_true", help="Export only Chinese dubbing without mixing the original soundtrack")
     parser.add_argument("--max-tts-speedup", type=float, default=1.35)
     parser.add_argument("--sidecar-subtitles", action="store_true", help="Embed subtitles as a soft track instead of burning them in")
     return parser.parse_args()
@@ -593,22 +785,31 @@ def main() -> int:
 
     require_command("ffmpeg")
     require_command("ffprobe")
+    original_local_input: Path | None = None
+    if not is_youtube_input(args.input):
+        original_local_input = Path(args.input).expanduser().resolve()
 
     source_video = ensure_source_video(
         args.input,
         workdir,
         cookies_from_browser=args.cookies_from_browser,
     )
-    source_audio = workdir / "audio.wav"
-    extract_audio(source_video, source_audio)
 
     transcript_path = workdir / "transcript.json"
     if args.transcript_json:
         segments = load_segments_from_json(Path(args.transcript_json).expanduser().resolve())
         write_json(transcript_path, {"segments": [asdict(segment) for segment in segments]})
+    elif original_local_input is not None:
+        input_srt = resolve_input_srt(
+            original_local_input,
+            Path(args.input_srt) if args.input_srt else None,
+        )
+        segments = load_segments_from_srt(input_srt)
+        write_json(transcript_path, {"segments": [asdict(segment) for segment in segments]})
     elif args.skip_transcription:
         raise SystemExit("--skip-transcription requires --transcript-json")
     else:
+        source_audio = ensure_source_audio(source_video, workdir)
         segments = transcribe_with_faster_whisper(
             source_audio,
             model_name=args.whisper_model,
@@ -649,10 +850,12 @@ def main() -> int:
     build_dub_track(segments, rendered_paths, dub_track)
 
     final_audio = workdir / "final_audio.wav"
-    mix_with_original_audio(
+    source_audio = None if args.mute_original_audio else ensure_source_audio(source_video, workdir)
+    finalize_audio(
         source_audio,
         dub_track,
         final_audio,
+        mute_original_audio=args.mute_original_audio,
         background_volume=args.background_volume,
     )
 

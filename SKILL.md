@@ -98,7 +98,7 @@ Prefer this order of execution:
 1. Use a provided transcript JSON if it already contains timestamps.
 2. Otherwise use local `faster-whisper` if available.
 3. Only download with `yt-dlp` when the input is an online URL.
-4. Use Volcengine translation credentials for subtitle translation and Volcengine TTS credentials for dubbing.
+4. Use Volcengine translation credentials for subtitle translation and API-key TTS credentials first for dubbing. Prefer `VOLCENGINE_TTS_API_KEY` + `VOLCENGINE_TTS_RESOURCE_ID` + `VOLCENGINE_TTS_URL`.
 5. If TTS is unavailable, still produce the Chinese SRT and stop there instead of guessing.
 
 Keep the translated Chinese concise. It is better to slightly compress the spoken line than to preserve every filler word and overrun the dub timing.
@@ -109,7 +109,7 @@ Keep the translated Chinese concise. It is better to slightly compress the spoke
 - If YouTube blocks anonymous download, rerun with `--cookies-from-browser edge` or another installed browser.
 - If `faster-whisper` is missing, install it or require `--transcript-json`.
 - If Volcengine translation credentials are missing and the transcript lacks `translated_text`, stop and request either `VOLCENGINE_ACCESS_KEY` plus `VOLCENGINE_SECRET_KEY` or a pre-translated transcript.
-- If Volcengine TTS credentials are missing, keep generating Chinese subtitles and stop before dubbing.
+- If API-key TTS configuration is missing, keep generating Chinese subtitles and stop before dubbing.
 - If subtitle burn-in fails because of an ffmpeg path issue, keep `subtitles.zh.srt` and export without burn-in rather than losing the localized result.
 
 ## Resources
@@ -117,3 +117,7 @@ Keep the translated Chinese concise. It is better to slightly compress the spoke
 - [scripts/run_localize_video.sh](scripts/run_localize_video.sh): wrapper that runs the pipeline inside the preinstalled `.venv`
 - [scripts/localize_video.py](scripts/localize_video.py): end-to-end download, ASR, translation, TTS, subtitle, mix, and export pipeline
 - [references/runtime-requirements.md](references/runtime-requirements.md): dependency setup, environment variables, and troubleshooting notes
+
+For this user's local course workflow, prefer writing outputs under:
+
+`C:\Users\陈序谦\Desktop\next.js`

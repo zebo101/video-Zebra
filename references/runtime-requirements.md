@@ -7,8 +7,8 @@
 
 ## Optional but Recommended Tools
 
-- `yt-dlp`: download YouTube inputs
-- `faster-whisper`: local speech-to-text with timestamps
+- `yt-dlp`: download YouTube inputs only
+- `faster-whisper`: speech-to-text with timestamps when no transcript JSON or English `.srt` is available
 - `volcengine-python-sdk`: already installed in this skill's `.venv` for Volcengine text translation
 
 ## Installed Layout On This Machine
@@ -25,16 +25,28 @@ Prefer running:
 
 instead of calling the system `python3` directly.
 
+On Windows, prefer:
+
+```powershell
+.\scripts\run_localize_video.ps1 ...
+```
+
 ## Typical Setup
 
-```bash
+```text
 brew install ffmpeg yt-dlp
-export VOLCENGINE_ACCESS_KEY="AK..."
-export VOLCENGINE_SECRET_KEY="SK..."
-export VOLCENGINE_REGION="cn-north-1"
-export VOLCENGINE_TTS_API_KEY="your-tts-api-key"
-export VOLCENGINE_TTS_RESOURCE_ID="volc.service_type.10029"
 ```
+
+```powershell
+$env:VOLCENGINE_ACCESS_KEY="AK..."
+$env:VOLCENGINE_SECRET_KEY="SK..."
+$env:VOLCENGINE_REGION="cn-north-1"
+$env:VOLCENGINE_TTS_API_KEY="your-ark-api-key"
+$env:VOLCENGINE_TTS_RESOURCE_ID="your-tts-resource-id"
+$env:VOLCENGINE_TTS_URL="https://your-tts-endpoint"
+```
+
+API-key mode is the preferred TTS configuration in this skill. If you use it, `VOLCENGINE_TTS_RESOURCE_ID` and `VOLCENGINE_TTS_URL` are both required. The legacy `VOLCENGINE_TTS_APP_ID` + `VOLCENGINE_TTS_ACCESS_KEY` pair is kept only as a fallback.
 
 If a YouTube download fails with a bot check, rerun with:
 
@@ -46,6 +58,36 @@ scripts/run_localize_video.sh \
 ```
 
 `faster-whisper` may require extra runtime libraries depending on the platform. If installation fails, fall back to providing `--transcript-json` instead of doing ASR inside the skill.
+
+## Local Course Workflow
+
+For local course folders that already include `lesson.mp4` plus `lesson_en.srt`, this skill now prefers the subtitle file instead of re-running ASR.
+
+Recommended command:
+
+```powershell
+.\scripts\run_localize_video.ps1 `
+  --input "C:\path\to\lesson.mp4" `
+  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson" `
+  --mute-original-audio
+```
+
+If the English subtitle file is not named with the default sibling pattern `*_en.srt`, pass it explicitly:
+
+```powershell
+.\scripts\run_localize_video.ps1 `
+  --input "C:\path\to\lesson.mp4" `
+  --input-srt "C:\path\to\lesson-source.srt" `
+  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson" `
+  --mute-original-audio
+```
+
+For this local-subtitle workflow:
+
+- You do need `VOLCENGINE_ACCESS_KEY` and `VOLCENGINE_SECRET_KEY` for translation
+- You do need `VOLCENGINE_TTS_API_KEY`, `VOLCENGINE_TTS_RESOURCE_ID`, and `VOLCENGINE_TTS_URL` for API-key dubbing
+- You do not need `yt-dlp`
+- You do not need `faster-whisper`
 
 ## Transcript JSON Shape
 
@@ -110,6 +152,10 @@ Pass `--cookies-from-browser edge` or another installed browser name so `yt-dlp`
 
 Install it, or pass `--transcript-json` with timestamped segments.
 
+### Missing sibling `*_en.srt` for a local video
+
+Pass `--input-srt` explicitly, or rename the English subtitle file to match the video stem.
+
 ### Missing `VOLCENGINE_ACCESS_KEY` or `VOLCENGINE_SECRET_KEY`
 
 Provide pre-translated `translated_text` in the transcript JSON, or stop after ASR and translate elsewhere before rerunning.
@@ -117,6 +163,10 @@ Provide pre-translated `translated_text` in the transcript JSON, or stop after A
 ### Missing `VOLCENGINE_TTS_API_KEY`
 
 Run with `--skip-tts` to produce subtitles only, or configure the speech application credentials in the Volcengine console.
+
+### Missing `VOLCENGINE_TTS_RESOURCE_ID` or `VOLCENGINE_TTS_URL`
+
+When using API-key mode, configure both variables from the TTS endpoint page in the Volcengine console. The script will stop before dubbing if either is absent.
 
 ### Invalid Speaker
 
