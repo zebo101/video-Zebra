@@ -1,9 +1,11 @@
 import importlib.util
+import http.client
 import json
 import sys
 import tempfile
 import unittest
 import uuid
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -23,7 +25,7 @@ class LocalizeVideoTests(unittest.TestCase):
             {
                 "VOLCENGINE_TTS_API_KEY": "api-key-123",
                 "VOLCENGINE_TTS_RESOURCE_ID": "resource-123",
-                "VOLCENGINE_TTS_URL": "https://ark.example.com/api/v1/tts",
+                "VOLCENGINE_TTS_URL": "https://openspeech.bytedance.com/api/v1/tts",
             },
             clear=True,
         ), mock.patch.object(localize_video.uuid, "uuid4", return_value=uuid.UUID("12345678-1234-5678-1234-567812345678")):
@@ -39,23 +41,24 @@ class LocalizeVideoTests(unittest.TestCase):
             request.headers["X-api-key"],
         )
         self.assertEqual(
-            "resource-123",
-            request.headers["X-api-resource-id"],
-        )
-        self.assertEqual(
             "12345678-1234-5678-1234-567812345678",
             request.headers["X-api-request-id"],
         )
-        self.assertEqual("https://ark.example.com/api/v1/tts", request.full_url)
+        self.assertEqual("https://openspeech.bytedance.com/api/v1/tts", request.full_url)
         self.assertNotIn("X-api-app-id", request.headers)
         self.assertNotIn("X-api-access-key", request.headers)
         payload = json.loads(request.data.decode("utf-8"))
-        self.assertEqual("你好，世界", payload["text"])
-        self.assertEqual("zh_female_cancan_mars_bigtts", payload["voice_type"])
-        self.assertEqual(1.0, payload["speed_ratio"])
-        self.assertEqual(1.0, payload["volume_ratio"])
-        self.assertEqual("wav", payload["audio_config"]["format"])
-        self.assertEqual(24000, payload["audio_config"]["sample_rate"])
+        self.assertEqual("resource-123", payload["app"]["appid"])
+        self.assertEqual("volcano_tts", payload["app"]["cluster"])
+        self.assertEqual("codex-localizer", payload["user"]["uid"])
+        self.assertEqual("你好，世界", payload["request"]["text"])
+        self.assertEqual("plain", payload["request"]["text_type"])
+        self.assertEqual("query", payload["request"]["operation"])
+        self.assertEqual("12345678-1234-5678-1234-567812345678", payload["request"]["reqid"])
+        self.assertEqual("zh_female_cancan_mars_bigtts", payload["audio"]["voice_type"])
+        self.assertEqual(1.0, payload["audio"]["speed_ratio"])
+        self.assertEqual(1.0, payload["audio"]["volume_ratio"])
+        self.assertEqual("wav", payload["audio"]["encoding"])
 
     def test_build_volc_tts_request_requires_url_and_resource_for_api_key(self) -> None:
         with mock.patch.dict(
@@ -113,7 +116,7 @@ class LocalizeVideoTests(unittest.TestCase):
             {
                 "VOLCENGINE_TTS_API_KEY": "api-key-123",
                 "VOLCENGINE_TTS_RESOURCE_ID": "resource-123",
-                "VOLCENGINE_TTS_URL": "https://ark.example.com/api/v1/tts",
+                "VOLCENGINE_TTS_URL": "https://openspeech.bytedance.com/api/v1/tts",
                 "VOLCENGINE_TTS_APP_ID": "app-id-123",
                 "VOLCENGINE_TTS_ACCESS_KEY": "access-key-456",
             },
@@ -127,6 +130,7 @@ class LocalizeVideoTests(unittest.TestCase):
             )
 
         self.assertEqual("api-key-123", request.headers["X-api-key"])
+        self.assertNotIn("X-api-resource-id", request.headers)
         self.assertNotIn("X-api-app-id", request.headers)
         self.assertNotIn("X-api-access-key", request.headers)
 
@@ -153,6 +157,66 @@ class LocalizeVideoTests(unittest.TestCase):
         )
 
         self.assertEqual(b"audio-bytes", result)
+
+    def test_read_tts_response_bytes_uses_partial_content_on_incomplete_read(self) -> None:
+        response = mock.Mock()
+        response.read.side_effect = http.client.IncompleteRead(b"partial-audio", 42)
+
+        result = localize_video.read_tts_response_bytes(response)
+
+        self.assertEqual(b"partial-audio", result)
+
+    def test_open_tts_request_retries_transient_url_errors(self) -> None:
+        first_error = urllib.error.URLError("temporary ssl eof")
+        second_response = mock.Mock()
+        second_response.__enter__ = mock.Mock(return_value=second_response)
+        second_response.__exit__ = mock.Mock(return_value=False)
+        second_response.read.return_value = b"ok"
+        second_response.headers.get.return_value = "audio/wav"
+
+        with mock.patch.object(
+            localize_video.urllib.request,
+            "urlopen",
+            side_effect=[first_error, second_response],
+        ) as urlopen_mock, mock.patch.object(localize_video.time, "sleep") as sleep_mock:
+            with localize_video.open_tts_request(mock.Mock()) as response:
+                payload = localize_video.read_tts_response_bytes(response)
+
+        self.assertEqual(b"ok", payload)
+        self.assertEqual(2, urlopen_mock.call_count)
+        sleep_mock.assert_called_once()
+
+    def test_synthesize_volc_tts_retries_truncated_json_response(self) -> None:
+        truncated_response = mock.Mock()
+        truncated_response.__enter__ = mock.Mock(return_value=truncated_response)
+        truncated_response.__exit__ = mock.Mock(return_value=False)
+        truncated_response.read.return_value = b'{"data":"YXVkaW8='
+        truncated_response.headers.get.return_value = "application/json"
+
+        valid_response = mock.Mock()
+        valid_response.__enter__ = mock.Mock(return_value=valid_response)
+        valid_response.__exit__ = mock.Mock(return_value=False)
+        valid_response.read.return_value = b'{"data":"YXVkaW8tYnl0ZXM="}'
+        valid_response.headers.get.return_value = "application/json"
+
+        with mock.patch.object(
+            localize_video,
+            "build_volc_tts_request",
+            return_value=mock.Mock(),
+        ), mock.patch.object(
+            localize_video,
+            "open_tts_request",
+            side_effect=[truncated_response, valid_response],
+        ) as open_mock:
+            result = localize_video.synthesize_volc_tts(
+                "你好，世界",
+                speaker="zh_male_liufei_uranus_bigtts",
+                response_format="wav",
+                sample_rate=24000,
+            )
+
+        self.assertEqual(b"audio-bytes", result)
+        self.assertEqual(2, open_mock.call_count)
 
     def test_load_segments_from_srt_parses_multiline_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

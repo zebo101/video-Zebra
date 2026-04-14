@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -279,23 +281,34 @@ def build_volc_tts_request(
             raise SystemExit(
                 "Missing TTS configuration for API key mode: set VOLCENGINE_TTS_RESOURCE_ID and VOLCENGINE_TTS_URL"
             )
+        request_id = str(uuid.uuid4())
         body = json.dumps(
             {
-                "text": text,
-                "voice_type": speaker,
-                "speed_ratio": 1.0,
-                "volume_ratio": 1.0,
-                "audio_config": {
-                    "format": response_format,
-                    "sample_rate": sample_rate,
+                "app": {
+                    "appid": resource_id,
+                    "cluster": os.environ.get("VOLCENGINE_TTS_CLUSTER", "volcano_tts").strip() or "volcano_tts",
+                },
+                "user": {
+                    "uid": os.environ.get("VOLCENGINE_TTS_UID", "codex-localizer").strip() or "codex-localizer",
+                },
+                "audio": {
+                    "voice_type": speaker,
+                    "encoding": response_format,
+                    "speed_ratio": 1.0,
+                    "volume_ratio": 1.0,
+                },
+                "request": {
+                    "reqid": request_id,
+                    "text": text,
+                    "text_type": "plain",
+                    "operation": "query",
                 },
             },
             ensure_ascii=False,
         ).encode("utf-8")
         headers = {
             "X-Api-Key": api_key,
-            "X-Api-Resource-Id": resource_id,
-            "X-Api-Request-Id": str(uuid.uuid4()),
+            "X-Api-Request-Id": request_id,
             "Connection": "keep-alive",
             "Content-Type": "application/json",
         }
@@ -398,6 +411,30 @@ def parse_tts_response(response_bytes: bytes, *, content_type: str) -> bytes:
     if final_code not in (None, 0, 20000000):
         raise SystemExit(f"Volc TTS failed: code={final_code}, message={final_message}")
     return b"".join(audio_parts)
+
+
+def read_tts_response_bytes(response) -> bytes:
+    try:
+        return response.read()
+    except http.client.IncompleteRead as exc:
+        if exc.partial:
+            return exc.partial
+        raise
+
+
+def open_tts_request(
+    request: urllib.request.Request,
+    *,
+    retries: int = 3,
+    retry_delay_seconds: float = 0.5,
+):
+    for attempt in range(retries):
+        try:
+            return urllib.request.urlopen(request)
+        except urllib.error.URLError:
+            if attempt + 1 >= retries:
+                raise
+            time.sleep(retry_delay_seconds)
 
 
 def create_volc_translate_api():
@@ -554,22 +591,28 @@ def synthesize_volc_tts(
     response_format: str,
     sample_rate: int,
 ) -> bytes:
-    request = build_volc_tts_request(
-        text,
-        speaker=speaker,
-        response_format=response_format,
-        sample_rate=sample_rate,
-    )
-    try:
-        with urllib.request.urlopen(request) as response:
-            response_bytes = response.read()
-            content_type = response.headers.get("Content-Type", "")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        headers = dict(exc.headers.items()) if exc.headers else {}
-        raise SystemExit(f"Volc TTS request failed ({exc.code}): headers={headers}, body={body}") from exc
+    for attempt in range(3):
+        request = build_volc_tts_request(
+            text,
+            speaker=speaker,
+            response_format=response_format,
+            sample_rate=sample_rate,
+        )
+        try:
+            with open_tts_request(request) as response:
+                response_bytes = read_tts_response_bytes(response)
+                content_type = response.headers.get("Content-Type", "")
+            return parse_tts_response(response_bytes, content_type=content_type)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            headers = dict(exc.headers.items()) if exc.headers else {}
+            raise SystemExit(f"Volc TTS request failed ({exc.code}): headers={headers}, body={body}") from exc
+        except json.JSONDecodeError as exc:
+            if attempt + 1 >= 3:
+                raise SystemExit("Volc TTS returned a truncated JSON response after retries") from exc
+            time.sleep(0.5)
 
-    return parse_tts_response(response_bytes, content_type=content_type)
+    raise AssertionError("unreachable")
 
 
 def synthesize_tts_segments(
@@ -766,7 +809,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whisper-compute-type", default="default", help="faster-whisper compute type")
     parser.add_argument("--translation-target-language", default="zh", help="Volcengine translation target language code")
     parser.add_argument("--translation-batch-size", type=int, default=16, help="Volcengine TranslateText batch size, max 16")
-    parser.add_argument("--voice", default="zh_female_cancan_mars_bigtts", help="Volc TTS speaker name")
+    parser.add_argument("--voice", default="zh_male_beijingxiaoye_emo_v2_mars_bigtts", help="Volc TTS speaker name")
     parser.add_argument("--tts-format", default="wav", choices=["mp3", "wav", "aac"], help="Volc TTS output format")
     parser.add_argument("--tts-sample-rate", type=int, default=24000, choices=[8000, 16000, 22050, 24000, 32000, 44100, 48000], help="Volc TTS sample rate")
     parser.add_argument("--background-volume", type=float, default=0.12)
