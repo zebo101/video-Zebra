@@ -5,93 +5,60 @@
 - `ffmpeg`
 - `ffprobe`
 
-## Optional but Recommended Tools
+## Optional Tools
 
-- `yt-dlp`: download YouTube inputs only
-- `faster-whisper`: speech-to-text with timestamps when no transcript JSON or English `.srt` is available
-- `volcengine-python-sdk`: already installed in this skill's `.venv` for Volcengine text translation
+- `yt-dlp`: only for YouTube inputs
+- `faster-whisper`: only when no sibling English subtitle or transcript JSON exists
 
-## Installed Layout On This Machine
+## Preferred Windows Entry Points
 
-This skill has a dedicated virtual environment at:
-
-`/Users/bytedance/.codex/skills/youtube-chinese-localizer/.venv`
-
-Prefer running:
-
-```bash
-/Users/bytedance/.codex/skills/youtube-chinese-localizer/scripts/run_localize_video.sh ...
-```
-
-instead of calling the system `python3` directly.
-
-On Windows, prefer:
+Course directory:
 
 ```powershell
-.\scripts\run_localize_video.ps1 ...
+.\scripts\run_localize_course.ps1 `
+  --course-dir "C:\path\to\course"
 ```
 
-## Typical Setup
-
-```text
-brew install ffmpeg yt-dlp
-```
-
-```powershell
-$env:VOLCENGINE_ACCESS_KEY="AK..."
-$env:VOLCENGINE_SECRET_KEY="SK..."
-$env:VOLCENGINE_REGION="cn-north-1"
-$env:VOLCENGINE_TTS_API_KEY="your-ark-api-key"
-$env:VOLCENGINE_TTS_RESOURCE_ID="your-tts-resource-id"
-$env:VOLCENGINE_TTS_URL="https://your-tts-endpoint"
-```
-
-API-key mode is the preferred TTS configuration in this skill. If you use it, `VOLCENGINE_TTS_RESOURCE_ID` and `VOLCENGINE_TTS_URL` are both required. The legacy `VOLCENGINE_TTS_APP_ID` + `VOLCENGINE_TTS_ACCESS_KEY` pair is kept only as a fallback.
-
-If a YouTube download fails with a bot check, rerun with:
-
-```bash
-scripts/run_localize_video.sh \
-  --input "https://www.youtube.com/watch?v=..." \
-  --workdir ./runs/demo \
-  --cookies-from-browser edge
-```
-
-`faster-whisper` may require extra runtime libraries depending on the platform. If installation fails, fall back to providing `--transcript-json` instead of doing ASR inside the skill.
-
-## Local Course Workflow
-
-For local course folders that already include `lesson.mp4` plus `lesson_en.srt`, this skill now prefers the subtitle file instead of re-running ASR.
-
-Recommended command:
+Single lesson:
 
 ```powershell
 .\scripts\run_localize_video.ps1 `
   --input "C:\path\to\lesson.mp4" `
-  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson" `
-  --mute-original-audio
+  --workdir "C:\path\to\lesson-workdir"
 ```
 
-If the English subtitle file is not named with the default sibling pattern `*_en.srt`, pass it explicitly:
+## Environment Variables
 
-```powershell
-.\scripts\run_localize_video.ps1 `
-  --input "C:\path\to\lesson.mp4" `
-  --input-srt "C:\path\to\lesson-source.srt" `
-  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson" `
-  --mute-original-audio
-```
+- `VOLCENGINE_ACCESS_KEY`: required for Volcengine `TranslateText`
+- `VOLCENGINE_SECRET_KEY`: required for Volcengine `TranslateText`
+- `VOLCENGINE_REGION`: translation region, defaults to `cn-north-1`
+- `VOLCENGINE_TTS_API_KEY`: required for API-key TTS mode
+- `VOLCENGINE_TTS_RESOURCE_ID`: use `3282640873` for the current speech app
+- `VOLCENGINE_TTS_URL`: use `https://openspeech.bytedance.com/api/v1/tts`
+- `VOLCENGINE_TTS_CLUSTER`: use `volcano_tts`
 
-For this local-subtitle workflow:
+Legacy `VOLCENGINE_TTS_APP_ID` + `VOLCENGINE_TTS_ACCESS_KEY` remains only as a fallback for the older single-lesson path.
 
-- You do need `VOLCENGINE_ACCESS_KEY` and `VOLCENGINE_SECRET_KEY` for translation
-- You do need `VOLCENGINE_TTS_API_KEY`, `VOLCENGINE_TTS_RESOURCE_ID`, and `VOLCENGINE_TTS_URL` for API-key dubbing
-- You do not need `yt-dlp`
-- You do not need `faster-whisper`
+## Default Course Workflow
+
+For local course directories that already include `lesson.mp4` plus `lesson_en.srt`, this skill prefers the subtitle file instead of re-running ASR.
+
+Default assumptions:
+
+- output root is `C:\Users\陈序谦\Desktop\next.js`
+- voice is `zh_male_liufei_uranus_bigtts`
+- original audio is muted
+- lesson outputs are overwritten on rerun
+
+Course wrapper output structure:
+
+- `C:\Users\陈序谦\Desktop\next.js\<course-name>\<lesson-name>.mp4`
+- `C:\Users\陈序谦\Desktop\next.js\<course-name>\_work\<lesson-stem>\...`
+- `C:\Users\陈序谦\Desktop\next.js\<course-name>\batch-localize.summary.json`
 
 ## Transcript JSON Shape
 
-The bundled script accepts either:
+The single-lesson engine accepts either:
 
 1. A raw array of segment objects
 2. An object with a top-level `segments` array
@@ -109,69 +76,28 @@ Each segment should look like:
 
 If `translated_text` is present for every segment, the script skips Volcengine text translation and goes straight to subtitle rendering and TTS.
 
-## Environment Variables
-
-- `VOLCENGINE_ACCESS_KEY`: required for Volcengine `TranslateText`
-- `VOLCENGINE_SECRET_KEY`: required for Volcengine `TranslateText`
-- `VOLCENGINE_REGION`: translation region, defaults to `cn-north-1`
-- `VOLCENGINE_TTS_API_KEY`: required for `openspeech.bytedance.com/api/v3/tts/unidirectional`
-- `VOLCENGINE_TTS_RESOURCE_ID`: defaults to `volc.service_type.10029`
-
-## Interface Choices In This Skill
-
-- Subtitle translation:
-  - interface: Volcengine `TranslateText`
-  - target language default: `zh`
-  - batch limit: 16 texts per request
-- Chinese dubbing:
-  - interface: Volc TTS `POST https://openspeech.bytedance.com/api/v3/tts/unidirectional`
-  - headers: `x-api-key` and `X-Api-Resource-Id`
-  - default speaker: `zh_female_qingxin`
-  - default format: `wav`
-
-This skill intentionally keeps ASR local with `faster-whisper`, because that avoids first uploading user video or audio into another cloud workflow just to obtain timestamps.
-
-## Quality Tuning
-
-- Use `--background-volume 0.08` to keep the original soundtrack very quiet.
-- Use `--background-volume 0.18` to preserve more ambience under the Chinese dub.
-- Use `--voice` to switch Volc TTS speakers.
-- Use a better `faster-whisper` model such as `medium` or `large-v3` when subtitle timing matters more than speed.
-- Keep `--translation-batch-size` at or below `16`.
 ## Common Failure Modes
 
-### Missing `yt-dlp`
+### Missing sibling `*_en.srt` for a lesson
 
-Pass a local file to `--input` instead of a URL, or install `yt-dlp`.
-
-### YouTube Bot Check
-
-Pass `--cookies-from-browser edge` or another installed browser name so `yt-dlp` can reuse your logged-in cookies.
-
-### Missing `faster-whisper`
-
-Install it, or pass `--transcript-json` with timestamped segments.
-
-### Missing sibling `*_en.srt` for a local video
-
-Pass `--input-srt` explicitly, or rename the English subtitle file to match the video stem.
+The course wrapper marks that lesson as failed in `batch-localize.summary.json` and continues with the rest of the course.
 
 ### Missing `VOLCENGINE_ACCESS_KEY` or `VOLCENGINE_SECRET_KEY`
 
-Provide pre-translated `translated_text` in the transcript JSON, or stop after ASR and translate elsewhere before rerunning.
+Provide pre-translated `translated_text` in transcript JSON, or stop after subtitle extraction and translate elsewhere before rerunning.
 
 ### Missing `VOLCENGINE_TTS_API_KEY`
 
-Run with `--skip-tts` to produce subtitles only, or configure the speech application credentials in the Volcengine console.
+Run with `--skip-tts` through the single-lesson engine for subtitles only, or configure the speech app credentials first.
 
 ### Missing `VOLCENGINE_TTS_RESOURCE_ID` or `VOLCENGINE_TTS_URL`
 
-When using API-key mode, configure both variables from the TTS endpoint page in the Volcengine console. The script will stop before dubbing if either is absent.
+Configure both before using API-key dubbing. The current preferred values for this machine are `3282640873` and `https://openspeech.bytedance.com/api/v1/tts`.
 
 ### Invalid Speaker
 
-If the API returns `TTSInvalidSpeaker`, switch `--voice` to a valid speaker from your enabled Volc TTS account.
+If the API returns a speaker error, switch `--voice` to another enabled speaker in the same speech application.
 
-### Burned Subtitles Fail
+### Output Root Equals Source Course Directory
 
-The script writes `subtitles.zh.srt` before muxing. Keep that file even if ffmpeg subtitle rendering fails and rerun without burn-in if needed.
+Do not point `--output-root` to the source course directory. The course wrapper blocks this to avoid overwriting source videos in place.

@@ -19,6 +19,13 @@ SPEC.loader.exec_module(localize_video)
 
 
 class LocalizeVideoTests(unittest.TestCase):
+    def test_parse_args_defaults_to_liufei_male_voice(self) -> None:
+        args = localize_video.parse_args(
+            ["--input", "lesson.mp4", "--workdir", "workdir"]
+        )
+
+        self.assertEqual("zh_male_liufei_uranus_bigtts", args.voice)
+
     def test_build_volc_tts_request_prefers_api_key_auth(self) -> None:
         with mock.patch.dict(
             localize_video.os.environ,

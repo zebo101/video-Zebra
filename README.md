@@ -1,28 +1,21 @@
 # video-Zebra-china
 
-Codex skill and standalone scripts for turning YouTube or local foreign-language videos into:
+Codex skill and local scripts for turning an entire course directory or a single foreign-language video into:
 
 - Simplified Chinese subtitles
-- Mandarin dubbing
-- final MP4 exports with burned-in subtitles
+- Mandarin male dubbing
+- final MP4 exports
 
-The current pipeline uses:
-
-- `yt-dlp` for YouTube download
-- sibling English `.srt` files or transcript JSON for local video inputs
-- `faster-whisper` for YouTube or fallback local ASR
-- Volcengine `TranslateText` for subtitle translation
-- Volc TTS with API-key mode first: `VOLCENGINE_TTS_API_KEY` + `VOLCENGINE_TTS_RESOURCE_ID` + `VOLCENGINE_TTS_URL`
-- legacy TTS auth remains as a fallback when only `VOLCENGINE_TTS_APP_ID` + `VOLCENGINE_TTS_ACCESS_KEY` are available
-- `ffmpeg` for audio mixing and final export
+The default workflow on this machine is course-directory batch processing.
 
 ## Repository Layout
 
-- `SKILL.md`: Codex skill entry
-- `scripts/localize_video.py`: end-to-end pipeline
-- `scripts/run_localize_video.sh`: launcher that prefers `.venv` and falls back to `python3`
-- `scripts/run_localize_video.ps1`: Windows PowerShell launcher
-- `references/runtime-requirements.md`: setup notes and troubleshooting
+- `SKILL.md`: root skill entry, now course-directory first
+- `scripts/localize_course.py`: course-level batch orchestration
+- `scripts/run_localize_course.ps1`: Windows course wrapper
+- `scripts/localize_video.py`: single-lesson engine
+- `scripts/run_localize_video.ps1`: Windows single-lesson wrapper
+- `references/runtime-requirements.md`: setup and credential notes
 - `agents/openai.yaml`: skill metadata
 
 ## Quick Start
@@ -47,84 +40,68 @@ Set credentials for translation + dubbing:
 $env:VOLCENGINE_ACCESS_KEY="AK..."
 $env:VOLCENGINE_SECRET_KEY="SK..."
 $env:VOLCENGINE_REGION="cn-north-1"
-$env:VOLCENGINE_TTS_API_KEY="your-ark-api-key"
-$env:VOLCENGINE_TTS_RESOURCE_ID="your-tts-resource-id"
-$env:VOLCENGINE_TTS_URL="https://your-tts-endpoint"
+$env:VOLCENGINE_TTS_API_KEY="your-api-key"
+$env:VOLCENGINE_TTS_RESOURCE_ID="3282640873"
+$env:VOLCENGINE_TTS_URL="https://openspeech.bytedance.com/api/v1/tts"
+$env:VOLCENGINE_TTS_CLUSTER="volcano_tts"
 ```
 
-For the current local course workflow, output the localized lessons under:
+Default output root:
 
 `C:\Users\陈序谦\Desktop\next.js`
 
-This repository is already a usable Codex skill source because it includes `SKILL.md` and `agents/openai.yaml`. Pushing to GitHub is useful for backup and reuse, but not required for the skill to work locally.
+## Primary Workflow: Course Directory
 
-## Usage Modes
+Use this when a course folder contains lesson `mp4` files plus sibling English subtitles named `*_en.srt`.
 
-### 1. Local video + sibling English SRT
+```powershell
+.\scripts\run_localize_course.ps1 `
+  --course-dir "C:\Users\陈序谦\Desktop\nextjs-react-the-complete-guide\02 -React复习"
+```
 
-Recommended for downloaded courses that already include `*_en.srt` next to the video.
+Default behavior:
+
+- output root is `C:\Users\陈序谦\Desktop\next.js`
+- voice is `zh_male_liufei_uranus_bigtts`
+- original audio is muted
+- existing lesson outputs are overwritten
+
+For a course like `02 -React复习`, the wrapper writes:
+
+- final lesson videos directly to `C:\Users\陈序谦\Desktop\next.js\02 -React复习`
+- intermediate files to `C:\Users\陈序谦\Desktop\next.js\02 -React复习\_work\<lesson-stem>`
+- batch summary to `C:\Users\陈序谦\Desktop\next.js\02 -React复习\batch-localize.summary.json`
+
+## Secondary Workflow: Single Lesson
+
+Use this for debugging or rerunning one lesson.
 
 ```powershell
 .\scripts\run_localize_video.ps1 `
   --input "C:\path\to\lesson.mp4" `
-  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson-local" `
-  --mute-original-audio
-```
-
-If the subtitle is not named `lesson_en.srt`, pass it explicitly:
-
-```powershell
-.\scripts\run_localize_video.ps1 `
-  --input "C:\path\to\lesson.mp4" `
-  --input-srt "C:\path\to\custom-lesson.srt" `
-  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson-local" `
-  --mute-original-audio
-```
-
-This mode does not need `yt-dlp` or `faster-whisper`.
-
-### 2. Local video + transcript JSON
-
-Use this when you already have timestamped transcript JSON in the format documented in `references/runtime-requirements.md`.
-
-```powershell
-.\scripts\run_localize_video.ps1 `
-  --input "C:\path\to\lesson.mp4" `
-  --transcript-json "C:\path\to\segments.json" `
-  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson-json" `
-  --mute-original-audio
-```
-
-### 3. YouTube URL
-
-The legacy YouTube path still works.
-
-```bash
-scripts/run_localize_video.sh \
-  --input "https://www.youtube.com/watch?v=..." \
-  --workdir ./runs/demo
-```
-
-If YouTube blocks anonymous download, reuse browser cookies:
-
-```bash
-scripts/run_localize_video.sh \
-  --input "https://www.youtube.com/watch?v=..." \
-  --workdir ./runs/demo \
-  --cookies-from-browser edge
+  --workdir "C:\Users\陈序谦\Desktop\next.js\lesson-workdir" `
+  --mute-original-audio `
+  --voice "zh_male_liufei_uranus_bigtts"
 ```
 
 ## Outputs
 
-The pipeline writes these files into the selected work directory:
+Course wrapper output:
+
+- same-named localized lesson `.mp4` files in the course output directory
+- `_work\<lesson-stem>\subtitles.zh.srt`
+- `_work\<lesson-stem>\dub_track.wav`
+- `_work\<lesson-stem>\final_audio.wav`
+- `_work\<lesson-stem>\stdout.log`
+- `_work\<lesson-stem>\stderr.log`
+- `batch-localize.summary.json`
+
+Single-lesson engine output:
 
 - `source.*`
-- `audio.wav`
 - `transcript.json`
 - `translated_segments.json`
 - `subtitles.zh.srt`
 - `dub_track.wav`
 - `final_audio.wav`
 - `final.mp4`
-
-When `--mute-original-audio` is enabled, `final_audio.wav` contains only the synthesized Chinese dubbing.

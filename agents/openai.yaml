@@ -1,4 +1,4 @@
 interface:
-  display_name: "YouTube 中文本地化"
-  short_description: "自动把海外视频生成中文字幕、普通话配音并导出最终成片"
-  default_prompt: "Use $youtube-chinese-localizer to turn this YouTube or local video into a Chinese-subtitled, Mandarin-dubbed final export."
+  display_name: "课程目录中文配音"
+  short_description: "给一个课程目录，自动批量生成中文字幕、中文男声配音和最终成片"
+  default_prompt: "Use $youtube-chinese-localizer to turn this course directory or local lesson video into Chinese-context subtitles, Mandarin male dubbing, and final exported lesson videos."

@@ -794,7 +794,7 @@ def export_final_video(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create Chinese subtitles and Mandarin dubbing for a video.")
     parser.add_argument("--input", required=True, help="YouTube URL or local video path")
     parser.add_argument("--workdir", required=True, help="Directory for intermediate and final files")
@@ -809,14 +809,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whisper-compute-type", default="default", help="faster-whisper compute type")
     parser.add_argument("--translation-target-language", default="zh", help="Volcengine translation target language code")
     parser.add_argument("--translation-batch-size", type=int, default=16, help="Volcengine TranslateText batch size, max 16")
-    parser.add_argument("--voice", default="zh_male_beijingxiaoye_emo_v2_mars_bigtts", help="Volc TTS speaker name")
+    parser.add_argument("--voice", default="zh_male_liufei_uranus_bigtts", help="Volc TTS speaker name")
     parser.add_argument("--tts-format", default="wav", choices=["mp3", "wav", "aac"], help="Volc TTS output format")
     parser.add_argument("--tts-sample-rate", type=int, default=24000, choices=[8000, 16000, 22050, 24000, 32000, 44100, 48000], help="Volc TTS sample rate")
     parser.add_argument("--background-volume", type=float, default=0.12)
     parser.add_argument("--mute-original-audio", action="store_true", help="Export only Chinese dubbing without mixing the original soundtrack")
     parser.add_argument("--max-tts-speedup", type=float, default=1.35)
     parser.add_argument("--sidecar-subtitles", action="store_true", help="Embed subtitles as a soft track instead of burning them in")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
